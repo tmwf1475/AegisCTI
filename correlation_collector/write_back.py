@@ -1,8 +1,3 @@
-"""
-Standalone OpenCTI IP Pusher (no CLI args)
-- Edit the CONFIG section below, then: python opencti_ip_push.py
-"""
-
 import os
 import sys
 import json
