@@ -1,0 +1,22 @@
+FROM python:3.12-alpine
+
+RUN apk update && apk add --no-cache \
+    git \
+    build-base \
+    libmagic \
+    libffi-dev \
+    libxml2-dev \
+    libxslt-dev \
+    && pip install --upgrade pip
+
+WORKDIR /opt/opencti-connector-ipsum
+
+COPY src /opt/opencti-connector-ipsum
+
+RUN pip install -r requirements.txt
+
+COPY config.yml /opt/opencti-connector-ipsum/config.yml
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
