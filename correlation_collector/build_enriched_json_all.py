@@ -1,17 +1,3 @@
-"""
-build_enriched_json_all.py (standalone, hardened)
-
-Purpose:
-  Merge the daily JSONL outputs from AbuseIPDB / VirusTotal / AlienVault (OTX)
-  into a single, enriched JSON file: `enriched_ips.json`.
-
-Design:
-  - No environment variables
-  - No command-line arguments
-  - All knobs live in CONFIG below
-  - Robust logging, file safety, and end-of-run summary
-"""
-
 import os
 import re
 import ipaddress
@@ -23,16 +9,17 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict, Counter
 from typing import Dict, Any, List, Optional, Tuple
 
-# =========================== CONFIG ===========================
 CONFIG = {
     # Daily JSONL folders for the three sources
     # Expected filename patterns: abuse_YYYY-MM-DD.jsonl / vt_YYYY-MM-DD.jsonl / otx_YYYY-MM-DD.jsonl
-    "ABUSE_DIR": "your_path",
-    "VT_DIR":    "your_path",
-    "OTX_DIR":   "your_path",
+    "ABUSE_DIR": "/home/tmwf/OSINT/opencti/opencti_correlation/opencti_output/AbuseIPDB/abuse_results",
+    "VT_DIR":    "/home/tmwf/OSINT/opencti/opencti_correlation/opencti_output/VirusTotal/vt_results",
+    "OTX_DIR":   "/home/tmwf/OSINT/opencti/opencti_correlation/opencti_output/AlienVault/otx_results",
 
-    # Output path (single JSON array)
-    "OUTPUT_JSON": "your_path",
+    # Output path (single JSON array) 
+    "OUTPUT_JSON": "/home/tmwf/OSINT/opencti/opencti_correlation/opencti_output/Enrich_IP/enriched_ips.json",
+    "DATE_IN_FILENAME": True,
+    "DATE_FORMAT": "%Y-%m-%d",   # Example: 2025-09-26; if you want pure numbers, use "%Y%m%d"
 
     # Default TLP label
     "DEFAULT_TLP": "TLP:GREEN",
@@ -152,6 +139,18 @@ def pick_latest(records: List[Dict[str, Any]], key: str) -> Dict[str, Any]:
         except Exception:
             return datetime.min
     return sorted(records, key=keyfn)[-1] if records else {}
+
+def with_dated_suffix(path: str, date_fmt: str) -> str:
+    if not date_fmt:
+        return path
+    today = datetime.now().strftime(date_fmt)
+    d, base = os.path.dirname(path), os.path.basename(path)
+    if "." in base:
+        stem, ext = base.rsplit(".", 1)
+        new_base = f"{stem}_{today}.{ext}"
+    else:
+        new_base = f"{base}_{today}"
+    return os.path.join(d or ".", new_base)
 
 # ---------------- loaders for each source ----------------
 def load_abuse_records(abuse_dir: str, since_days: int) -> Dict[str, List[Dict[str, Any]]]:
@@ -593,7 +592,12 @@ def main():
         uniq[r["ip"]] = r
     final_rows = [uniq[k] for k in sorted(uniq.keys(), key=lambda x: (x.count(":"), x))]
 
-    out_dir = os.path.dirname(output) or "."
+    # --- build dated output path ---
+    out_path = CONFIG["OUTPUT_JSON"]
+    if CONFIG.get("DATE_IN_FILENAME", True):
+        out_path = with_dated_suffix(out_path, CONFIG.get("DATE_FORMAT", "%Y-%m-%d"))
+
+    out_dir = os.path.dirname(out_path) or "."
     try:
         os.makedirs(out_dir, exist_ok=True)
     except Exception as e:
@@ -601,7 +605,7 @@ def main():
         sys.exit(3)
 
     try:
-        with open(output, "w", encoding="utf-8") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             json.dump(final_rows, f, ensure_ascii=False, indent=2)
     except Exception as e:
         LOG.error(f"Failed to write output JSON: {e}")
@@ -610,7 +614,7 @@ def main():
     # Summary
     LOG.info("==== Summary ====")
     LOG.info(f"AbuseIPDB IPs: {len(abuse_recs)} | VT IPs: {len(vt_latest)} | OTX IPs: {len(otx_latest)}")
-    LOG.info(f"Merged unique IPs: {len(final_rows)}  →  {output}")
+    LOG.info(f"Merged unique IPs: {len(final_rows)}  →  {out_path}")
     LOG.info("Done.")
 
 if __name__ == "__main__":
