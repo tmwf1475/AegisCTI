@@ -1,5 +1,5 @@
 """
-build_enriched_json_all.py (self-contained)
+build_enriched_json_all.py (standalone, hardened)
 
 Purpose:
   Merge the daily JSONL outputs from AbuseIPDB / VirusTotal / AlienVault (OTX)
@@ -9,6 +9,7 @@ Design:
   - No environment variables
   - No command-line arguments
   - All knobs live in CONFIG below
+  - Robust logging, file safety, and end-of-run summary
 """
 
 import os
@@ -16,6 +17,8 @@ import re
 import ipaddress
 import json
 import glob
+import sys
+import logging
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict, Counter
 from typing import Dict, Any, List, Optional, Tuple
@@ -24,12 +27,12 @@ from typing import Dict, Any, List, Optional, Tuple
 CONFIG = {
     # Daily JSONL folders for the three sources
     # Expected filename patterns: abuse_YYYY-MM-DD.jsonl / vt_YYYY-MM-DD.jsonl / otx_YYYY-MM-DD.jsonl
-    "ABUSE_DIR": "/home/tmwf/OSINT/opencti/opencti_correlation/opencti_output/AbuseIPDB/abuse_results",
-    "VT_DIR":    "/home/tmwf/OSINT/opencti/opencti_correlation/opencti_output/VirusTotal/vt_results",
-    "OTX_DIR":   "/home/tmwf/OSINT/opencti/opencti_correlation/opencti_output/AlienVault/otx_results",
+    "ABUSE_DIR": "your_path",
+    "VT_DIR":    "your_path",
+    "OTX_DIR":   "your_path",
 
     # Output path (single JSON array)
-    "OUTPUT_JSON": "/home/tmwf/OSINT/opencti/opencti_correlation/opencti_output/enriched_ips.json",
+    "OUTPUT_JSON": "your_path",
 
     # Default TLP label
     "DEFAULT_TLP": "TLP:GREEN",
@@ -59,7 +62,17 @@ CONFIG = {
         "VT_CONF_HIGH_TOTAL": 40,
         "VT_CONF_MED_TOTAL": 20,
     },
+
+    # Logging level: DEBUG / INFO / WARNING / ERROR
+    "LOG_LEVEL": "INFO",
 }
+
+# ---------- logging ----------
+LOG = logging.getLogger("build_enriched_json_all")
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+LOG.addHandler(_handler)
+LOG.setLevel(getattr(logging, CONFIG.get("LOG_LEVEL", "INFO").upper(), logging.INFO))
 
 # Mapping AbuseIPDB category IDs → readable labels
 ABUSE_CAT_MAP = {
@@ -138,7 +151,7 @@ def pick_latest(records: List[Dict[str, Any]], key: str) -> Dict[str, Any]:
             return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
         except Exception:
             return datetime.min
-    return sorted(records, key=keyfn)[-1]
+    return sorted(records, key=keyfn)[-1] if records else {}
 
 # ---------------- loaders for each source ----------------
 def load_abuse_records(abuse_dir: str, since_days: int) -> Dict[str, List[Dict[str, Any]]]:
@@ -147,10 +160,13 @@ def load_abuse_records(abuse_dir: str, since_days: int) -> Dict[str, List[Dict[s
     Keeps all daily records for the same IP (we will pick the 'latest' later).
     """
     per_ip: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    if not abuse_dir:
+    if not abuse_dir or not os.path.isdir(abuse_dir):
+        LOG.warning(f"AbuseIPDB dir not found: {abuse_dir}")
         return per_ip
     pattern = os.path.join(abuse_dir, "abuse_*.jsonl")
-    for path in files_within_days(pattern, since_days):
+    files = files_within_days(pattern, since_days)
+    LOG.info(f"[AbuseIPDB] Scanning {len(files)} file(s)")
+    for path in files:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 for ln in f:
@@ -171,17 +187,21 @@ def load_abuse_records(abuse_dir: str, since_days: int) -> Dict[str, List[Dict[s
                     per_ip[ip].append(rec)
         except FileNotFoundError:
             continue
+        except Exception as e:
+            LOG.warning(f"[AbuseIPDB] Read failed: {path} | {e}")
+    LOG.info(f"[AbuseIPDB] Loaded IPs: {len(per_ip)}")
     return per_ip
 
 def load_vt_latest(vt_dir: str, since_days: int) -> Dict[str, Dict[str, Any]]:
-    """
-    Return a dict ip -> latest VirusTotal record (based on `checked_at`).
-    """
+    """Return a dict ip -> latest VirusTotal record (based on `checked_at`)."""
     latest: Dict[str, Dict[str, Any]] = {}
-    if not vt_dir:
+    if not vt_dir or not os.path.isdir(vt_dir):
+        LOG.warning(f"VT dir not found: {vt_dir}")
         return latest
     pattern = os.path.join(vt_dir, "vt_*.jsonl")
-    for path in files_within_days(pattern, since_days):
+    files = files_within_days(pattern, since_days)
+    LOG.info(f"[VT] Scanning {len(files)} file(s)")
+    for path in files:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 for ln in f:
@@ -211,17 +231,21 @@ def load_vt_latest(vt_dir: str, since_days: int) -> Dict[str, Dict[str, Any]]:
                             latest[ip] = rec
         except FileNotFoundError:
             continue
+        except Exception as e:
+            LOG.warning(f"[VT] Read failed: {path} | {e}")
+    LOG.info(f"[VT] Loaded IPs: {len(latest)}")
     return latest
 
 def load_otx_latest(otx_dir: str, since_days: int) -> Dict[str, Dict[str, Any]]:
-    """
-    Return a dict ip -> latest OTX record (based on `checked_at`).
-    """
+    """Return a dict ip -> latest OTX record (based on `checked_at`)."""
     latest: Dict[str, Dict[str, Any]] = {}
-    if not otx_dir:
+    if not otx_dir or not os.path.isdir(otx_dir):
+        LOG.warning(f"OTX dir not found: {otx_dir}")
         return latest
     pattern = os.path.join(otx_dir, "otx_*.jsonl")
-    for path in files_within_days(pattern, since_days):
+    files = files_within_days(pattern, since_days)
+    LOG.info(f"[OTX] Scanning {len(files)} file(s)")
+    for path in files:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 for ln in f:
@@ -251,6 +275,9 @@ def load_otx_latest(otx_dir: str, since_days: int) -> Dict[str, Dict[str, Any]]:
                             latest[ip] = rec
         except FileNotFoundError:
             continue
+        except Exception as e:
+            LOG.warning(f"[OTX] Read failed: {path} | {e}")
+    LOG.info(f"[OTX] Loaded IPs: {len(latest)}")
     return latest
 
 # ---------------- tagging & confidence logic ----------------
@@ -467,6 +494,10 @@ def main():
     include_vt_only  = bool(CONFIG["INCLUDE_VT_ONLY"])
     include_otx_only = bool(CONFIG["INCLUDE_OTX_ONLY"])
 
+    if not output:
+        LOG.error("CONFIG['OUTPUT_JSON'] is empty.")
+        sys.exit(2)
+
     # Load sources
     abuse_recs = load_abuse_records(abuse_dir, since_days) if abuse_dir else {}
     vt_latest  = load_vt_latest(vt_dir, since_days) if vt_dir else {}
@@ -562,11 +593,25 @@ def main():
         uniq[r["ip"]] = r
     final_rows = [uniq[k] for k in sorted(uniq.keys(), key=lambda x: (x.count(":"), x))]
 
-    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-    with open(output, "w", encoding="utf-8") as f:
-        json.dump(final_rows, f, ensure_ascii=False, indent=2)
+    out_dir = os.path.dirname(output) or "."
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except Exception as e:
+        LOG.error(f"Failed to create output dir {out_dir}: {e}")
+        sys.exit(3)
 
-    print(f"[build_enriched_json_all] wrote {len(final_rows)} rows -> {output}")
+    try:
+        with open(output, "w", encoding="utf-8") as f:
+            json.dump(final_rows, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        LOG.error(f"Failed to write output JSON: {e}")
+        sys.exit(4)
+
+    # Summary
+    LOG.info("==== Summary ====")
+    LOG.info(f"AbuseIPDB IPs: {len(abuse_recs)} | VT IPs: {len(vt_latest)} | OTX IPs: {len(otx_latest)}")
+    LOG.info(f"Merged unique IPs: {len(final_rows)}  →  {output}")
+    LOG.info("Done.")
 
 if __name__ == "__main__":
     main()
