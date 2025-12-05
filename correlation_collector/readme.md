@@ -1,116 +1,243 @@
-# Threat Intelligence Enrichment Toolkit (OpenCTI + External Feeds)
+# Threat Intelligence Correlation & Enrichment Toolkit
 
-This repository provides a modular Python-based toolkit for **collecting, enriching, and pushing IP threat intelligence** into OpenCTI.
-It integrates with external sources like **AbuseIPDB**, **AlienVault OTX**, and **VirusTotal**, and consolidates results into enriched JSON for further use in OpenCTI.
+### *OpenCTI + OSINT + External Intelligence APIs*
 
-## Components
+This repository provides a modular and automated framework for **collecting, enriching, correlating, and analyzing IP and domain threat intelligence**.
+It integrates data from:
 
-| File                           | Purpose                                                                                                                                |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| **backlog_abuse.py**           | Fetches and stores AbuseIPDB enrichment data for IPs. Uses a SQLite backlog to manage pending queries and rate limits.                 |
-| **backlog_alienvault.py**      | Fetches AlienVault OTX enrichment data for IPs. Stores results in a SQLite backlog and daily JSONL logs.                               |
-| **backlog_virustotal.py**      | Queries VirusTotal for IP reputation and enrichment data. Uses SQLite for backlog and JSONL output.                                    |
-| **build_enriched_json_all.py** | Merges daily results from AbuseIPDB, VirusTotal, and AlienVault into a single `enriched_ips.json` file with deduplication and scoring. |
-| **indicator_count.py**         | Queries OpenCTI GraphQL for global indicator counts and sample distributions by observable type.                                       |
-| **opencti_enrich.py**          | Exports reports, indicators, and observables from OpenCTI (IOC timelines, enrichment input files).                                     |
-| **plan_ips.py**                | Extracts newly created or updated IPs from OpenCTI within a time window and saves them as input for enrichment.                        |
-| **write_back.py**              | Pushes enriched IP intelligence (`enriched_ips.json`) back into OpenCTI as Observables, Indicators, and Reports.                       |
+* **OpenCTI** (Indicators, Observables, Reports)
+* **OSINT URL/Domain Feeds** (OpenPhish, URLhaus, BlockListProject, etc.)
+* **External Intelligence APIs** (VirusTotal, AbuseIPDB, AlienVault OTX)
 
-## Workflow
+The toolkit produces enriched datasets, analytics reports, and can write intelligence **back into OpenCTI**.
 
-1. **Plan enrichment targets**
 
-   ```bash
-   python3 plan_ips.py
-   ```
+## Core Features
 
-   * Collects IPs from OpenCTI (based on creation/update window).
-   * Saves list of IPs into `ip_output/`.
+* **Automated IP intelligence enrichment** (VT / AbuseIPDB / OTX)
+* **Domain intelligence pipeline** (OSINT collection → DNS/WHOIS → scoring → external enrichment → clustering)
+* **Rate-limit aware backlog processors** with API key rotation
+* **Risk scoring (DMS), verdict classification, prioritization**
+* **Consolidated JSON enrichment output**
+* **Statistical reports + clustering + time-series analysis**
+* **Optional OpenCTI write-back (Indicators, Observables, Reports)**
 
-2. **Run enrichment backlogs**
-   For each source, run its backlog processor (can be scheduled via cron):
+Designed for high-volume, continuously updated threat data environments.
 
-   ```bash
-   python3 backlog_abuse.py
-   python3 backlog_alienvault.py
-   python3 backlog_virustotal.py
-   ```
+## Repository Structure
 
-   * Reads pending IPs.
-   * Queries the API (respecting daily caps).
-   * Saves results into daily JSONL + SQLite backlog.
+```
+correlation_collector/
+│
+├── Backlog_Data/                     ← External API backlog processors (IP)
+│     ├── backlog_abuse.py
+│     ├── backlog_alienvault.py
+│     └── backlog_virustotal.py
+│
+├── Collect_Data/                     ← OpenCTI data extraction
+│     ├── opencti_enrich.py
+│     └── plan_ips.py
+│
+├── Data_Compilation/                 ← Consolidation & OpenCTI write-back
+│     ├── build_enriched_json_all.py
+│     └── write_back.py
+│
+├── Data_Count/                       ← Statistical counting scripts
+│     ├── indicators_count.py
+│     └── ioc_count.py
+│
+└── Domain_Data/                      ← Domain intelligence pipeline (NEW)
+      ├── domain_collector.py         ← OSINT feed collection + local analysis
+      ├── enrich_domain.py            ← VT + OTX + AbuseIPDB enrichment
+      └── domain_analyze.py           ← Clustering + time-series + report
+```
 
-3. **Merge enrichments**
+## Module Overview
 
-   ```bash
-   python3 build_enriched_json_all.py
-   ```
+### 1. Collect_Data — OpenCTI Extraction
 
-   * Reads JSONL files from all sources.
-   * Deduplicates per IP, selects latest records.
-   * Outputs consolidated `enriched_ips.json`.
+| File                  | Description                                                                        |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| **plan_ips.py**       | Pulls newly created/updated IP observables from OpenCTI within a time window.      |
+| **opencti_enrich.py** | Exports OpenCTI objects (Indicators, Observables, Reports) for offline enrichment. |
 
-4. **Write back to OpenCTI**
 
-   ```bash
-   python3 write_back.py
-   ```
+### 2. Backlog_Data — External API Backlog (IP Enrichment)
 
-   * Reads `enriched_ips.json`.
-   * Creates/updates Observables, Indicators, Reports in OpenCTI.
-   * Adds labels (categories, confidence, source refs).
+Each script reads pending IPs from backlog storage (SQLite), calls APIs respecting rate limits, rotates keys when needed, and stores results in daily JSONL files.
 
-## Requirements
+| Module                    | Intelligence Source                              |
+| ------------------------- | ------------------------------------------------ |
+| **backlog_abuse.py**      | AbuseIPDB (IP reputation, reports, ISP metadata) |
+| **backlog_alienvault.py** | AlienVault OTX (pulses, tags, reputation)        |
+| **backlog_virustotal.py** | VirusTotal IP analysis                           |
 
-* Python 3.8+
-* Install dependencies:
+**Features:**
 
-  ```bash
-  pip install requests pycti python-dotenv
-  ```
-* API keys:
+* Automatic API key rotation
+* Caching (skip previously enriched IPs)
+* Prioritized enrichment (risk-based, freshness-based)
+* Daily output logs
 
-  * AbuseIPDB API key(s) in `backlog_abuse.py`
-  * AlienVault OTX API key(s) in `backlog_alienvault.py`
-  * VirusTotal API key(s) in `backlog_virustotal.py`
-* OpenCTI token in `.env` or environment variables:
+### 3. Domain_Data — Domain Intelligence Pipeline (New)
 
-  ```env
-  OPENCTI_URL=http://localhost:8080
-  OPENCTI_TOKEN=xxxx
-  ```
-## Outputs
+#### 3.1 domain_collector.py — OSINT Collection + Local Analysis
 
-* **AbuseIPDB** → `AbuseIPDB/abuse_results/abuse_YYYY-MM-DD.jsonl`
-* **OTX** → `AlienVault/otx_results/otx_YYYY-MM-DD.jsonl`
-* **VirusTotal** → `VirusTotal/vt_results/vt_YYYY-MM-DD.jsonl`
-* **Merged** → `enriched_ips.json` (final enriched dataset)
-* **OpenCTI exports** → JSONL files under `opencti_output/`
+Collects URLs/domains from:
 
-## Example Run
+* OpenPhish
+* URLhaus
+* BlockListProject (phishing, malware)
+* AdGuard Malware
+* Disconnect.me
+* StevenBlack hosts
+
+Extracts domains and performs:
+
+* WHOIS lookup (age)
+* DNS A/NS/MX resolution
+* Domain entropy calculation
+* Phishing keyword detection
+* TLD risk evaluation
+
+Computes **DMS (Domain Malicious Score)** + verdict
+Outputs:
+
+```
+domains_with_data.jsonl
+domains_no_data.jsonl
+domains_all.jsonl
+```
+
+#### 3.2 enrich_domain.py — VT / AbuseIPDB / OTX Domain Enrichment
+
+Enhances domains using:
+
+* **VirusTotal** (domain reputation, analysis stats)
+* **AbuseIPDB** (based on A-record IPs; Cloudflare NS skipped)
+* **AlienVault OTX** (general domain info)
+
+Key features:
+
+* API key rotation
+* Refresh intervals
+* Risk-based prioritization
+* Output saved to:
+
+```
+domains_all_enriched.jsonl
+```
+
+#### 3.3 domain_analyze.py — Clustering & Reporting
+
+Outputs:
+
+* **clusters.csv** (KMeans on DMS, entropy, URL count, VT stats, etc.)
+* **timeseries.csv** (IOC/first-seen trends)
+* **domain_report.md** (summary + stats)
+
+
+### 4. Data_Compilation — Merging & OpenCTI Write-Back
+
+| File                           | Description                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------ |
+| **build_enriched_json_all.py** | Merges all IP enrichment results (VT + OTX + AbuseIPDB) into a single `enriched_ips.json`. |
+| **write_back.py**              | Writes enriched intelligence back into OpenCTI (Observables, Indicators, Reports).         |
+
+
+### 5. Data_Count — Statistics & Utilities
+
+* **indicators_count.py** — count indicators by type
+* **ioc_count.py** — observable statistics
+
+## End-to-End Workflows
+
+### A. IP Enrichment Workflow
 
 ```bash
-# Step 1: Fetch IPs from OpenCTI
+# 1. Fetch new IPs from OpenCTI
 python3 plan_ips.py
 
-# Step 2: Enrich with AbuseIPDB
+# 2. Run backlogs for external enrichment
 python3 backlog_abuse.py
-
-# Step 3: Enrich with AlienVault OTX
 python3 backlog_alienvault.py
-
-# Step 4: Enrich with VirusTotal
 python3 backlog_virustotal.py
 
-# Step 5: Merge all sources
+# 3. Merge results
 python3 build_enriched_json_all.py
 
-# Step 6: Push enriched intelligence back to OpenCTI
+# 4. Write enriched data back into OpenCTI
 python3 write_back.py
 ```
 
-## Notes
+### B. Domain Intelligence Workflow
 
-* Each backlog script uses SQLite to avoid duplicate queries and to track rate limits.
-* Merging keeps **latest valid records** and calculates confidence based on reports/metrics.
-* All scripts can be scheduled via **cron** or task schedulers for full automation.
+```bash
+# 1. Collect OSINT domains + perform local analysis
+python3 domain_collector.py
+
+# 2. Enrich high-risk domains with VT / OTX / AbuseIPDB
+python3 enrich_domain.py
+
+# 3. Run clustering + reporting
+python3 domain_analyze.py
+```
+
+## Installation
+
+```
+pip install -r requirements.txt
+```
+
+Required Python packages include:
+
+```
+requests
+pycti
+python-dotenv
+tldextract
+dnspython
+python-whois
+pandas
+scikit-learn
+```
+
+## Environment Variables
+
+```
+OPENCTI_URL=http://localhost:8080
+OPENCTI_TOKEN=your_token
+```
+
+#### External API keys:
+
+* VirusTotal
+* AbuseIPDB
+* AlienVault OTX
+
+##  Output Files
+
+```
+opencti_output/
+  ├── ip_out/
+  ├── domain_out/
+  │     ├── domains_all.jsonl
+  │     ├── domains_all_enriched.jsonl
+  │     ├── clusters.csv
+  │     ├── timeseries.csv
+  │     └── domain_report.md
+  ├── enriched_ips.json
+  └── reports.json
+```
+
+## Summary
+
+This repository implements a complete pipeline for **IP and Domain Threat Intelligence**, providing:
+
+* Automated multi-source data collection
+* Smart risk-based enrichment
+* Consolidated intelligence datasets
+* Domain clustering & analytics
+* Integration with OpenCTI
+
+It is designed for security research teams, CTI analysts, SOC automation, and large-scale threat hunting operations.
