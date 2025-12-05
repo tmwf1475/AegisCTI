@@ -3,24 +3,24 @@
 """
 Functionality:
 1. Collects malicious URLs/domains from the OSINT feed without API Key:
-- OpenPhish
-- URLhaus
-- BlockListProject (phishing/malware)
-- AdGuard Malware List
-- Disconnect.me simple_malware
-- StevenBlack hosts
+    - OpenPhish
+    - URLhaus
+    - BlockListProject (phishing/malware)
+    - AdGuard Malware List
+    - Disconnect.me simple_malware
+    - StevenBlack hosts
 2. Extracts domain names, removes duplicates, and then performs in-depth analysis on a small subset.
 3. Instead of VirusTotal/OTX, uses:
-- WHOIS (domain age) ← Executes only on a subset of high-value domains
-- DNS (A/NS/MX)
-- TLD risk
-- Domain entropy
-- URL phishing keyword pattern
+    - WHOIS (domain age) ← Executes only on a subset of high-value domains
+    - DNS (A/NS/MX)
+    - TLD risk
+    - Domain entropy
+    - URL phishing keyword pattern
 4. Calculates DMS (malicious score) and verdict (malicious/suspicious/unknown)
 5. Outputs three JSONL files:
-- domains_with_data.jsonl (with enrichment data)
-- domains_no_data.jsonl (without enrichment data, with explanation)
-- domains_all.jsonl (both) (Merge a good master's copy)
+    - domains_with_data.jsonl (with enrichment data)
+    - domains_no_data.jsonl (without enrichment data, with explanation)
+    - domains_all.jsonl (both) (Merge a good master's copy)
 """
 import csv
 import json
