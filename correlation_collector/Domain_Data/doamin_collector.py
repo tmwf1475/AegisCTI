@@ -1,27 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Functionality:
-1. Collects malicious URLs/domains from the OSINT feed without API Key:
-    - OpenPhish
-    - URLhaus
-    - BlockListProject (phishing/malware)
-    - AdGuard Malware List
-    - Disconnect.me simple_malware
-    - StevenBlack hosts
-2. Extracts domain names, removes duplicates, and then performs in-depth analysis on a small subset.
-3. Instead of VirusTotal/OTX, uses:
-    - WHOIS (domain age) ← Executes only on a subset of high-value domains
-    - DNS (A/NS/MX)
-    - TLD risk
-    - Domain entropy
-    - URL phishing keyword pattern
-4. Calculates DMS (malicious score) and verdict (malicious/suspicious/unknown)
-5. Outputs three JSONL files:
-    - domains_with_data.jsonl (with enrichment data)
-    - domains_no_data.jsonl (without enrichment data, with explanation)
-    - domains_all.jsonl (both) (Merge a good master's copy)
-"""
 import csv
 import json
 import math
@@ -38,7 +14,12 @@ import requests
 import tldextract
 import dns.resolver
 import whois
-socket.setdefaulttimeout(3)
+
+socket.setdefaulttimeout(10)
+
+RUN_TS = datetime.datetime.now(datetime.UTC)
+RUN_TS_ISO = RUN_TS.isoformat()
+RUN_ID = RUN_TS.strftime("%Y%m%d")
 
 
 class Config:
@@ -48,16 +29,16 @@ class Config:
     BASE_OUTPUT_DIR = "your_path"
 
     @staticmethod
-    def output_with_data():
-        return f"{Config.BASE_OUTPUT_DIR}/domains_with_data.jsonl"
+    def output_with_data() -> str:
+        return f"{Config.BASE_OUTPUT_DIR}/domains_with_data_{RUN_ID}.jsonl"
 
     @staticmethod
-    def output_no_data():
-        return f"{Config.BASE_OUTPUT_DIR}/domains_no_data.jsonl"
+    def output_no_data() -> str:
+        return f"{Config.BASE_OUTPUT_DIR}/domains_no_data_{RUN_ID}.jsonl"
 
     @staticmethod
-    def output_all():
-        return f"{Config.BASE_OUTPUT_DIR}/domains_all.jsonl"
+    def output_all() -> str:
+        return f"{Config.BASE_OUTPUT_DIR}/domains_all_{RUN_ID}.jsonl"
 
     OPENPHISH_URL          = "https://openphish.com/feed.txt"
     URLHAUS_RECENT         = "https://urlhaus.abuse.ch/downloads/csv_recent/"
@@ -104,6 +85,8 @@ class DomainRecord:
     domain: str
     sources: List[str] = field(default_factory=list)
     sample_urls: List[str] = field(default_factory=list)
+
+    crawl_timestamp: str = ""
 
     features: DomainLocalFeatures = field(default_factory=DomainLocalFeatures)
     dms_score: int = 0
@@ -364,7 +347,7 @@ def compute_dms(record: DomainRecord) -> None:
         elif f.entropy >= 3.7:
             score += 15
 
-    # 4. Number of DNS A records (FastFlux / Multiple IPs)
+    # 4. DNS A records / NS / MX
     cf_ns = any("cloudflare.com" in ns for ns in f.ns_records)
 
     if len(f.a_records) >= 5:
@@ -380,6 +363,7 @@ def compute_dms(record: DomainRecord) -> None:
     if not f.mx_records:
         score += 5
 
+    # 5. Phish keyword hits
     if f.phish_keyword_hits >= 10:
         score += 20
     elif f.phish_keyword_hits >= 3:
@@ -387,6 +371,7 @@ def compute_dms(record: DomainRecord) -> None:
     elif f.phish_keyword_hits >= 1:
         score += 5
 
+    # 6. URL count
     if f.url_count >= 50:
         score += 15
     elif f.url_count >= 10:
@@ -458,6 +443,7 @@ def collect_domains() -> Dict[str, DomainRecord]:
                 domain=domain,
                 sources=sorted(set(sources)),
                 sample_urls=[url],
+                crawl_timestamp=RUN_TS_ISO,
             )
             rec.features.url_count = 1
             domain_map[domain] = rec
@@ -596,31 +582,18 @@ def enrich_domains(domains: Dict[str, DomainRecord]) -> None:
     logging.info(f"WHOIS actually performed for {whois_count} domains.")
 
 
-def save_jsonl_split_and_all(domains: Dict[str, DomainRecord],
-                             path_with: str,
-                             path_without: str,
-                             path_all: str):
-    with open(path_with, "w", encoding="utf-8") as f_with, \
-         open(path_without, "w", encoding="utf-8") as f_no, \
-         open(path_all, "w", encoding="utf-8") as f_all:
-
+def save_jsonl_all_only(domains: Dict[str, DomainRecord], path_all: str):
+    with open(path_all, "w", encoding="utf-8") as f_all:
         for rec in domains.values():
-            line = rec.to_json() + "\n"
-            # with / no_data
-            if rec.has_enrichment:
-                f_with.write(line)
-            else:
-                f_no.write(line)
-            # all
-            f_all.write(line)
+            f_all.write(rec.to_json() + "\n")
 
-    logging.info(
-        f"Saved with_data={path_with}, no_data={path_without}, all={path_all}"
-    )
+    logging.info(f"Saved all={path_all}")
+
 
 
 def main():
-    logging.info("=== Domain Collector (NO API, multi-source, filtered, split+all output) START ===")
+    logging.info("=== Domain Collector (NO API, multi-source, filtered, split+all output, time-series ready) START ===")
+    logging.info(f"Run timestamp (UTC) = {RUN_TS_ISO}, run_id = {RUN_ID}")
 
     domains = collect_domains()
     if not domains:
@@ -628,17 +601,13 @@ def main():
         return
 
     domains = filter_domains_for_enrich(domains)
-
     enrich_domains(domains)
-
-    save_jsonl_split_and_all(
+    save_jsonl_all_only(
         domains,
-        Config.output_with_data(),
-        Config.output_no_data(),
         Config.output_all(),
     )
 
-    logging.info("=== Domain Collector (NO API, multi-source, filtered, split+all output) DONE ===")
+    logging.info("=== Domain Collector DONE ===")
 
 
 if __name__ == "__main__":
